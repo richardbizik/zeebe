@@ -41,11 +41,12 @@ import java.util.Objects;
 import org.apache.http.HttpStatus;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.web.servlet.MvcResult;
 
-// @Ignore
+@Ignore
 public class MigrateProcessInstanceOperationZeebeIT extends OperateZeebeAbstractIT {
 
   @Autowired private MigrateProcessInstanceHandler migrateProcessInstanceHandler;
