@@ -127,16 +127,16 @@ public class ExecutionListenerTaskElementsTest {
             BpmnElementType.USER_TASK,
             setup(b -> b.userTask().zeebeUserTask().zeebeAssignee("foo")),
             (Consumer<Long>) pik -> ENGINE.userTask().ofInstance(pik).complete()
-          } /*,
-            {
-              BpmnElementType.RECEIVE_TASK,
-              setup(
-                  b ->
-                      b.receiveTask()
-                          .message(mb -> mb.name("msg").zeebeCorrelationKey("=\"id-123\""))),
-              (Consumer<Long>)
-                  pik -> ENGINE.message().withName("msg").withCorrelationKey("id-123").publish()
-            }*/
+          },
+          {
+            BpmnElementType.RECEIVE_TASK,
+            setup(
+                b ->
+                    b.receiveTask()
+                        .message(mb -> mb.name("msg").zeebeCorrelationKey("=\"id-123\""))),
+            (Consumer<Long>)
+                pik -> ENGINE.message().withName("msg").withCorrelationKey("id-123").publish()
+          }
         });
   }
 
@@ -163,7 +163,7 @@ public class ExecutionListenerTaskElementsTest {
     ENGINE.job().ofInstance(processInstanceKey).withType(END_EL_TYPE + "_1").complete();
     ENGINE.job().ofInstance(processInstanceKey).withType(END_EL_TYPE + "_2").complete();
 
-    // then
+    // then: EL jobs completed in expected order
     assertExecutionListenerJobsCompleted(
         processInstanceKey,
         START_EL_TYPE + "_1",
@@ -203,8 +203,7 @@ public class ExecutionListenerTaskElementsTest {
     // complete failed start EL job
     ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE).complete();
 
-    // then
-    // process the main task activity
+    // then: process the main task activity
     processTask.accept(processInstanceKey);
 
     // then: assert the start EL job was completed after the failure
@@ -299,7 +298,7 @@ public class ExecutionListenerTaskElementsTest {
         .withRetries(0)
         .fail();
 
-    // then
+    // then: incident created
     final Record<IncidentRecordValue> incident =
         RecordingExporter.incidentRecords(IncidentIntent.CREATED)
             .withProcessInstanceKey(processInstanceKey)
@@ -317,7 +316,7 @@ public class ExecutionListenerTaskElementsTest {
     // process the main task activity
     processTask.accept(processInstanceKey);
 
-    // then: assert the EL job was completed after incident resolution
+    // assert the EL job was completed after incident resolution
     assertThat(
             records()
                 .betweenProcessInstance(processInstanceKey)
@@ -371,7 +370,7 @@ public class ExecutionListenerTaskElementsTest {
     // when: fail end EL job with no retries
     ENGINE.job().ofInstance(processInstanceKey).withType(END_EL_TYPE + "_1").withRetries(0).fail();
 
-    // then
+    // then: incident created
     final Record<IncidentRecordValue> incident =
         RecordingExporter.incidentRecords(IncidentIntent.CREATED)
             .withProcessInstanceKey(processInstanceKey)
@@ -463,7 +462,7 @@ public class ExecutionListenerTaskElementsTest {
     // resolve incident
     ENGINE.incident().ofInstance(processInstanceKey).withKey(incident.getKey()).resolve();
 
-    // then: complete start EL job
+    // complete start EL job
     ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE).complete();
 
     // process the main task activity
