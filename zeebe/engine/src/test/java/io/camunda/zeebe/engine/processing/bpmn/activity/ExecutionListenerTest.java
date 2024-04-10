@@ -7,7 +7,6 @@
  */
 package io.camunda.zeebe.engine.processing.bpmn.activity;
 
-import static io.camunda.zeebe.protocol.record.intent.JobIntent.FAILED;
 import static io.camunda.zeebe.test.util.record.RecordingExporter.jobRecords;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.entry;
@@ -17,7 +16,6 @@ import io.camunda.zeebe.model.bpmn.Bpmn;
 import io.camunda.zeebe.model.bpmn.BpmnModelInstance;
 import io.camunda.zeebe.protocol.record.Assertions;
 import io.camunda.zeebe.protocol.record.Record;
-import io.camunda.zeebe.protocol.record.RecordType;
 import io.camunda.zeebe.protocol.record.intent.IncidentIntent;
 import io.camunda.zeebe.protocol.record.intent.JobIntent;
 import io.camunda.zeebe.protocol.record.intent.ProcessInstanceIntent;
@@ -32,14 +30,13 @@ import io.camunda.zeebe.protocol.record.value.ProcessInstanceRecordValue;
 import io.camunda.zeebe.protocol.record.value.VariableRecordValue;
 import io.camunda.zeebe.test.util.record.RecordingExporter;
 import io.camunda.zeebe.test.util.record.RecordingExporterTestWatcher;
-import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 
-public class ExecutionListenerJobTest {
+public class ExecutionListenerTest {
   @ClassRule public static final EngineRule ENGINE = EngineRule.singlePartition();
 
   private static final String PROCESS_ID = "process";
@@ -50,58 +47,6 @@ public class ExecutionListenerJobTest {
   @Rule
   public final RecordingExporterTestWatcher recordingExporterTestWatcher =
       new RecordingExporterTestWatcher();
-
-  @Test
-  public void
-      shouldCreateIncidentDuringEvaluatingServiceTaskOutputMappingsAndResumeWithEndELsAfterResolving() {
-    // given
-    final BpmnModelInstance modelInstance =
-        Bpmn.createExecutableProcess(PROCESS_ID)
-            .startEvent("start")
-            .serviceTask(
-                "task",
-                t ->
-                    t.zeebeJobType(SERVICE_TASK_TYPE)
-                        .zeebeOutputExpression("assert(some_var, some_var != null)", "o_var_1")
-                        .zeebeStartExecutionListener(START_EL_TYPE)
-                        .zeebeEndExecutionListener(END_EL_TYPE))
-            .endEvent("end")
-            .done();
-    ENGINE.deployment().withXmlResource(modelInstance).deploy();
-    final long processInstanceKey = ENGINE.processInstance().ofBpmnProcessId(PROCESS_ID).create();
-
-    // complete EL[start] and service task jobs
-    ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE).complete();
-    ENGINE.job().ofInstance(processInstanceKey).withType(SERVICE_TASK_TYPE).complete();
-
-    // then
-    final Record<IncidentRecordValue> incident =
-        RecordingExporter.incidentRecords(IncidentIntent.CREATED)
-            .withProcessInstanceKey(processInstanceKey)
-            .getFirst();
-    Assertions.assertThat(incident.getValue())
-        .hasProcessInstanceKey(processInstanceKey)
-        .hasErrorType(ErrorType.IO_MAPPING_ERROR)
-        .hasErrorMessage(
-            """
-                Assertion failure on evaluate the expression '{o_var_1:assert(some_var, some_var != null)}': \
-                The condition is not fulfilled The evaluation reported the following warnings:
-                [NO_VARIABLE_FOUND] No variable found with name 'some_var'
-                [NO_VARIABLE_FOUND] No variable found with name 'some_var'
-                [ASSERT_FAILURE] The condition is not fulfilled""");
-
-    // fix issue with missing `some_var` variable
-    ENGINE
-        .variables()
-        .ofScope(processInstanceKey)
-        .withDocument(Map.of("some_var", "foo_bar"))
-        .update();
-
-    ENGINE.incident().ofInstance(processInstanceKey).withKey(incident.getKey()).resolve();
-
-    // job for EL[end] should be created
-    verifyJobCreationThenComplete(processInstanceKey, 2, END_EL_TYPE, JobKind.EXECUTION_LISTENER);
-  }
 
   @Test
   public void
@@ -195,48 +140,6 @@ public class ExecutionListenerJobTest {
   }
 
   @Test
-  public void shouldRecurFailedExecutionListenerJobAfterBackoff() {
-    // given
-    final BpmnModelInstance modelInstance =
-        Bpmn.createExecutableProcess("process")
-            .startEvent("start")
-            .serviceTask(
-                "task",
-                t -> t.zeebeJobType(SERVICE_TASK_TYPE).zeebeStartExecutionListener(START_EL_TYPE))
-            .endEvent("end")
-            .done();
-    ENGINE.deployment().withXmlResource(modelInstance).deploy();
-    final long processInstanceKey = ENGINE.processInstance().ofBpmnProcessId(PROCESS_ID).create();
-
-    // when: fail service task job
-    final Duration backOff = Duration.ofMinutes(30);
-    final Record<JobRecordValue> failedStartElJobRecord =
-        ENGINE
-            .job()
-            .ofInstance(processInstanceKey)
-            .withType(START_EL_TYPE)
-            .withBackOff(backOff)
-            .withRetries(2)
-            .fail();
-
-    Assertions.assertThat(failedStartElJobRecord).hasRecordType(RecordType.EVENT).hasIntent(FAILED);
-
-    ENGINE.increaseTime(backOff);
-
-    // verify that our job recurred after backoff
-    final Record<JobRecordValue> recurredJob =
-        jobRecords(JobIntent.RECURRED_AFTER_BACKOFF).withType(START_EL_TYPE).getFirst();
-    assertThat(recurredJob.getKey()).isEqualTo(failedStartElJobRecord.getKey());
-
-    // when: complete recreated job
-    ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE).complete();
-
-    // job for service task should be created
-    assertJobState(
-        processInstanceKey, 1, SERVICE_TASK_TYPE, JobIntent.CREATED, JobKind.BPMN_ELEMENT);
-  }
-
-  @Test
   public void
       shouldReCreateFirstElJobAfterResolvingIncidentCreatedDuringResolvingServiceJobExpressions() {
     // given
@@ -289,6 +192,7 @@ public class ExecutionListenerJobTest {
             Bpmn.createExecutableProcess(PROCESS_ID)
                 .startEvent()
                 .serviceTask("task", t -> t.zeebeJobType(SERVICE_TASK_TYPE))
+                .zeebeStartExecutionListener(START_EL_TYPE)
                 .zeebeEndExecutionListener(END_EL_TYPE)
                 .endEvent()
                 .done())
@@ -300,9 +204,11 @@ public class ExecutionListenerJobTest {
     ENGINE
         .job()
         .ofInstance(processInstanceKey)
-        .withType(SERVICE_TASK_TYPE)
+        .withType(START_EL_TYPE)
         .withVariable("x", 1)
         .complete();
+
+    ENGINE.job().ofInstance(processInstanceKey).withType(SERVICE_TASK_TYPE).complete();
 
     // then
     final Optional<JobRecordValue> jobActivated =
@@ -375,50 +281,6 @@ public class ExecutionListenerJobTest {
     // then: Validate merged variables after all listeners and tasks are completed
     assertVariable(
         processInstanceKey, VariableIntent.CREATED, "mergedVars", "\"aValue+bValueUpdated\"");
-  }
-
-  @Test
-  public void shouldEvaluateExpressionsForExecutionListenerJobs() {
-    // given
-    final BpmnModelInstance modelInstance =
-        Bpmn.createExecutableProcess("process")
-            .startEvent("start")
-            .serviceTask(
-                "task",
-                t ->
-                    t.zeebeJobType(SERVICE_TASK_TYPE)
-                        .zeebeExecutionListener(
-                            b ->
-                                b.start()
-                                    .typeExpression("listenerNameVar")
-                                    .retriesExpression("elRetries"))
-                        .zeebeExecutionListener(
-                            b -> b.start().type(START_EL_TYPE + "_2").retries("5"))
-                        .zeebeExecutionListener(
-                            b -> b.end().type(END_EL_TYPE).retriesExpression("elRetries + 5")))
-            .endEvent("end")
-            .done();
-
-    // when
-    ENGINE.deployment().withXmlResource(modelInstance).deploy();
-    final long processInstanceKey =
-        ENGINE
-            .processInstance()
-            .ofBpmnProcessId(PROCESS_ID)
-            .withVariables(Map.of("elRetries", 6, "listenerNameVar", START_EL_TYPE + "_1"))
-            .create();
-
-    // then
-    verifyJobCreationThenComplete(
-            processInstanceKey, 0, START_EL_TYPE + "_1", JobKind.EXECUTION_LISTENER)
-        .hasRetries(6);
-    verifyJobCreationThenComplete(
-            processInstanceKey, 1, START_EL_TYPE + "_2", JobKind.EXECUTION_LISTENER)
-        .hasRetries(5);
-    verifyJobCreationThenComplete(processInstanceKey, 2, SERVICE_TASK_TYPE, JobKind.BPMN_ELEMENT)
-        .hasRetries(3);
-    verifyJobCreationThenComplete(processInstanceKey, 3, END_EL_TYPE, JobKind.EXECUTION_LISTENER)
-        .hasRetries(11);
   }
 
   @Test
@@ -586,7 +448,7 @@ public class ExecutionListenerJobTest {
   private static void completeRecreatedJobWithType(
       final long processInstanceKey, final String jobType) {
     final long jobKey =
-        RecordingExporter.jobRecords(JobIntent.CREATED)
+        jobRecords(JobIntent.CREATED)
             .withProcessInstanceKey(processInstanceKey)
             .withType(jobType)
             .skip(1)
@@ -625,7 +487,7 @@ public class ExecutionListenerJobTest {
             .getFirst();
 
     final Record<JobRecordValue> jobRecord =
-        RecordingExporter.jobRecords(expectedJobIntent)
+        jobRecords(expectedJobIntent)
             .withProcessInstanceKey(processInstanceKey)
             .skip(jobIndex)
             .getFirst();

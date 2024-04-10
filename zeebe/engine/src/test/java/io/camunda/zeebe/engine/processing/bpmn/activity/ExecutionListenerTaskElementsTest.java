@@ -7,6 +7,8 @@
  */
 package io.camunda.zeebe.engine.processing.bpmn.activity;
 
+import static io.camunda.zeebe.protocol.record.intent.JobIntent.FAILED;
+import static io.camunda.zeebe.test.util.record.RecordingExporter.jobRecords;
 import static io.camunda.zeebe.test.util.record.RecordingExporter.records;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
@@ -23,6 +25,7 @@ import io.camunda.zeebe.model.bpmn.builder.AbstractTaskBuilder;
 import io.camunda.zeebe.model.bpmn.builder.StartEventBuilder;
 import io.camunda.zeebe.protocol.record.Assertions;
 import io.camunda.zeebe.protocol.record.Record;
+import io.camunda.zeebe.protocol.record.RecordType;
 import io.camunda.zeebe.protocol.record.ValueType;
 import io.camunda.zeebe.protocol.record.intent.IncidentIntent;
 import io.camunda.zeebe.protocol.record.intent.JobIntent;
@@ -31,8 +34,10 @@ import io.camunda.zeebe.protocol.record.value.BpmnElementType;
 import io.camunda.zeebe.protocol.record.value.ErrorType;
 import io.camunda.zeebe.protocol.record.value.IncidentRecordValue;
 import io.camunda.zeebe.protocol.record.value.JobKind;
+import io.camunda.zeebe.protocol.record.value.JobRecordValue;
 import io.camunda.zeebe.test.util.record.RecordingExporter;
 import io.camunda.zeebe.test.util.record.RecordingExporterTestWatcher;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Map;
@@ -156,7 +161,7 @@ public class ExecutionListenerTaskElementsTest {
     ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE + "_1").complete();
     ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE + "_2").complete();
 
-    // process the main task activity
+    // process main task activity
     processTask.accept(processInstanceKey);
 
     // complete the end execution listener jobs
@@ -203,7 +208,7 @@ public class ExecutionListenerTaskElementsTest {
     // complete failed start EL job
     ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE).complete();
 
-    // then: process the main task activity
+    // then: process main task activity
     processTask.accept(processInstanceKey);
 
     // then: assert the start EL job was completed after the failure
@@ -242,7 +247,7 @@ public class ExecutionListenerTaskElementsTest {
     deployProcess(createProcessWithTask(b -> b.zeebeEndExecutionListener(END_EL_TYPE)));
     final long processInstanceKey = ENGINE.processInstance().ofBpmnProcessId(PROCESS_ID).create();
 
-    // process the main task activity
+    // process main task activity
     processTask.accept(processInstanceKey);
 
     // when: fail end EL with retries
@@ -313,7 +318,7 @@ public class ExecutionListenerTaskElementsTest {
     ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE + "_1").complete();
     ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE + "_2").complete();
 
-    // process the main task activity
+    // process main task activity
     processTask.accept(processInstanceKey);
 
     // assert the EL job was completed after incident resolution
@@ -364,7 +369,7 @@ public class ExecutionListenerTaskElementsTest {
                     .zeebeEndExecutionListener(END_EL_TYPE + "_2")));
     final long processInstanceKey = ENGINE.processInstance().ofBpmnProcessId(PROCESS_ID).create();
 
-    // process the main task activity
+    // process main task activity
     processTask.accept(processInstanceKey);
 
     // when: fail end EL job with no retries
@@ -465,7 +470,157 @@ public class ExecutionListenerTaskElementsTest {
     // complete start EL job
     ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE).complete();
 
-    // process the main task activity
+    // process main task activity
+    processTask.accept(processInstanceKey);
+
+    // assert the EL job was created after incident resolution
+    assertThat(
+            records()
+                .betweenProcessInstance(processInstanceKey)
+                .withValueTypes(ValueType.JOB, ValueType.INCIDENT)
+                .onlyEvents())
+        .extracting(Record::getValueType, Record::getIntent)
+        .containsSequence(
+            tuple(ValueType.INCIDENT, IncidentIntent.CREATED),
+            tuple(ValueType.INCIDENT, IncidentIntent.RESOLVED),
+            tuple(ValueType.JOB, JobIntent.CREATED),
+            tuple(ValueType.JOB, JobIntent.COMPLETED));
+
+    // assert the process instance has completed as expected
+    assertThat(
+            RecordingExporter.processInstanceRecords()
+                .withProcessInstanceKey(processInstanceKey)
+                .limitToProcessInstanceCompleted())
+        .extracting(r -> r.getValue().getBpmnElementType(), Record::getIntent)
+        .containsSubsequence(
+            tuple(BpmnElementType.PROCESS, ProcessInstanceIntent.ELEMENT_ACTIVATING),
+            tuple(BpmnElementType.START_EVENT, ProcessInstanceIntent.ELEMENT_ACTIVATED),
+            tuple(BpmnElementType.START_EVENT, ProcessInstanceIntent.ELEMENT_COMPLETED),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_ACTIVATING),
+            tuple(elementType, ProcessInstanceIntent.COMPLETE_EXECUTION_LISTENER),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_ACTIVATED),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_COMPLETING),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_COMPLETED),
+            tuple(BpmnElementType.END_EVENT, ProcessInstanceIntent.ELEMENT_COMPLETED),
+            tuple(BpmnElementType.PROCESS, ProcessInstanceIntent.ELEMENT_COMPLETED));
+  }
+
+  @Test
+  public void shouldCreateIncidentDuringEvaluatingTaskOutputMappingsAndProceedWithEndListeners() {
+    // Skip test for `BpmnElementType.TASK` and `BpmnElementType.MANUAL_TASK` because
+    // these element types do not support output mappings.
+    assumeThat(elementType, is(not(oneOf(BpmnElementType.TASK, BpmnElementType.MANUAL_TASK))));
+
+    // given
+    deployProcess(
+        createProcessWithTask(
+            b ->
+                b.zeebeOutputExpression("assert(some_var, some_var != null)", "o_var_1")
+                    .zeebeEndExecutionListener(END_EL_TYPE)));
+    final long processInstanceKey = ENGINE.processInstance().ofBpmnProcessId(PROCESS_ID).create();
+
+    // when: process main task activity
+    processTask.accept(processInstanceKey);
+
+    // then: incident created
+    final Record<IncidentRecordValue> incident =
+        RecordingExporter.incidentRecords(IncidentIntent.CREATED)
+            .withProcessInstanceKey(processInstanceKey)
+            .getFirst();
+    Assertions.assertThat(incident.getValue())
+        .hasProcessInstanceKey(processInstanceKey)
+        .hasErrorType(ErrorType.IO_MAPPING_ERROR)
+        .hasErrorMessage(
+            """
+                Assertion failure on evaluate the expression '{o_var_1:assert(some_var, some_var != null)}': \
+                The condition is not fulfilled The evaluation reported the following warnings:
+                [NO_VARIABLE_FOUND] No variable found with name 'some_var'
+                [NO_VARIABLE_FOUND] No variable found with name 'some_var'
+                [ASSERT_FAILURE] The condition is not fulfilled""");
+
+    // fix issue with missing `some_var` variable
+    ENGINE
+        .variables()
+        .ofScope(processInstanceKey)
+        .withDocument(Map.of("some_var", "foo_bar"))
+        .update();
+    // resolve incident
+    ENGINE.incident().ofInstance(processInstanceKey).withKey(incident.getKey()).resolve();
+
+    // complete start EL job
+    ENGINE.job().ofInstance(processInstanceKey).withType(END_EL_TYPE).complete();
+
+    // assert the EL job was created after incident resolution
+    assertThat(
+            records()
+                .betweenProcessInstance(processInstanceKey)
+                .withValueTypes(ValueType.JOB, ValueType.INCIDENT)
+                .onlyEvents())
+        .extracting(Record::getValueType, Record::getIntent)
+        .containsSequence(
+            tuple(ValueType.INCIDENT, IncidentIntent.CREATED),
+            tuple(ValueType.INCIDENT, IncidentIntent.RESOLVED),
+            tuple(ValueType.JOB, JobIntent.CREATED),
+            tuple(ValueType.JOB, JobIntent.COMPLETED));
+
+    // assert the process instance has completed as expected
+    assertThat(
+            RecordingExporter.processInstanceRecords()
+                .withProcessInstanceKey(processInstanceKey)
+                .limitToProcessInstanceCompleted())
+        .extracting(r -> r.getValue().getBpmnElementType(), Record::getIntent)
+        .containsSubsequence(
+            tuple(BpmnElementType.PROCESS, ProcessInstanceIntent.ELEMENT_ACTIVATING),
+            tuple(BpmnElementType.START_EVENT, ProcessInstanceIntent.ELEMENT_ACTIVATED),
+            tuple(BpmnElementType.START_EVENT, ProcessInstanceIntent.ELEMENT_COMPLETED),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_ACTIVATING),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_ACTIVATED),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_COMPLETING),
+            tuple(elementType, ProcessInstanceIntent.COMPLETE_EXECUTION_LISTENER),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_COMPLETED),
+            tuple(BpmnElementType.END_EVENT, ProcessInstanceIntent.ELEMENT_COMPLETED),
+            tuple(BpmnElementType.PROCESS, ProcessInstanceIntent.ELEMENT_COMPLETED));
+  }
+
+  @Test
+  public void shouldRecurFailedStartExecutionListenerJobAfterBackoff() {
+    // given
+    deployProcess(createProcessWithTask(b -> b.zeebeStartExecutionListener(START_EL_TYPE)));
+    final long processInstanceKey = ENGINE.processInstance().ofBpmnProcessId(PROCESS_ID).create();
+
+    // when: fail start EL
+    final Duration backOff = Duration.ofMinutes(30);
+    final Record<JobRecordValue> failedStartElJobRecord =
+        ENGINE
+            .job()
+            .ofInstance(processInstanceKey)
+            .withType(START_EL_TYPE)
+            .withBackOff(backOff)
+            .withRetries(2)
+            .fail();
+
+    Assertions.assertThat(failedStartElJobRecord).hasRecordType(RecordType.EVENT).hasIntent(FAILED);
+
+    // increase time to backoff
+    ENGINE.increaseTime(backOff);
+
+    // then: assert the EL job was recurred after backoff
+    assertThat(
+            jobRecords()
+                .withProcessInstanceKey(processInstanceKey)
+                .withJobKind(JobKind.EXECUTION_LISTENER)
+                .onlyEvents()
+                .limit(3))
+        .extracting(Record::getIntent, Record::getKey)
+        .containsSequence(
+            tuple(JobIntent.CREATED, failedStartElJobRecord.getKey()),
+            tuple(JobIntent.FAILED, failedStartElJobRecord.getKey()),
+            tuple(JobIntent.RECURRED_AFTER_BACKOFF, failedStartElJobRecord.getKey()));
+
+    // complete re-created job
+    ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE).complete();
+
+    // process main task activity
     processTask.accept(processInstanceKey);
 
     // assert the process instance has completed as expected
@@ -482,6 +637,73 @@ public class ExecutionListenerTaskElementsTest {
             tuple(elementType, ProcessInstanceIntent.COMPLETE_EXECUTION_LISTENER),
             tuple(elementType, ProcessInstanceIntent.ELEMENT_ACTIVATED),
             tuple(elementType, ProcessInstanceIntent.ELEMENT_COMPLETING),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_COMPLETED),
+            tuple(BpmnElementType.END_EVENT, ProcessInstanceIntent.ELEMENT_COMPLETED),
+            tuple(BpmnElementType.PROCESS, ProcessInstanceIntent.ELEMENT_COMPLETED));
+  }
+
+  @Test
+  public void shouldEvaluateExpressionsForExecutionListeners() {
+    // given
+    deployProcess(
+        createProcessWithTask(
+            b ->
+                b.zeebeExecutionListener(
+                        el ->
+                            el.start()
+                                .typeExpression("listenerNameVar")
+                                .retriesExpression("elRetries"))
+                    .zeebeExecutionListener(
+                        el -> el.start().type(START_EL_TYPE + "_2").retries("5"))
+                    .zeebeExecutionListener(
+                        el -> el.end().type(END_EL_TYPE).retriesExpression("elRetries + 5"))));
+
+    // when
+    final long processInstanceKey =
+        ENGINE
+            .processInstance()
+            .ofBpmnProcessId(PROCESS_ID)
+            .withVariables(Map.of("elRetries", 6, "listenerNameVar", START_EL_TYPE + "evaluated_1"))
+            .create();
+
+    // complete start ELs
+    ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE + "evaluated_1").complete();
+    ENGINE.job().ofInstance(processInstanceKey).withType(START_EL_TYPE + "_2").complete();
+    // process main task activity
+    processTask.accept(processInstanceKey);
+    // complete end EL
+    ENGINE.job().ofInstance(processInstanceKey).withType(END_EL_TYPE).complete();
+
+    // then: assert the EL job completed with expected evaluated `type` and `retries` props
+    assertThat(
+            jobRecords()
+                .withProcessInstanceKey(processInstanceKey)
+                .withJobKind(JobKind.EXECUTION_LISTENER)
+                .withIntent(JobIntent.COMPLETED)
+                .onlyEvents()
+                .limit(3))
+        .extracting(r -> r.getValue().getType(), r -> r.getValue().getRetries())
+        .containsSequence(
+            tuple(START_EL_TYPE + "evaluated_1", 6),
+            tuple(START_EL_TYPE + "_2", 5),
+            tuple(END_EL_TYPE, 11));
+
+    // assert the process instance has completed as expected
+    assertThat(
+            RecordingExporter.processInstanceRecords()
+                .withProcessInstanceKey(processInstanceKey)
+                .limitToProcessInstanceCompleted())
+        .extracting(r -> r.getValue().getBpmnElementType(), Record::getIntent)
+        .containsSubsequence(
+            tuple(BpmnElementType.PROCESS, ProcessInstanceIntent.ELEMENT_ACTIVATING),
+            tuple(BpmnElementType.START_EVENT, ProcessInstanceIntent.ELEMENT_ACTIVATED),
+            tuple(BpmnElementType.START_EVENT, ProcessInstanceIntent.ELEMENT_COMPLETED),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_ACTIVATING),
+            tuple(elementType, ProcessInstanceIntent.COMPLETE_EXECUTION_LISTENER),
+            tuple(elementType, ProcessInstanceIntent.COMPLETE_EXECUTION_LISTENER),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_ACTIVATED),
+            tuple(elementType, ProcessInstanceIntent.ELEMENT_COMPLETING),
+            tuple(elementType, ProcessInstanceIntent.COMPLETE_EXECUTION_LISTENER),
             tuple(elementType, ProcessInstanceIntent.ELEMENT_COMPLETED),
             tuple(BpmnElementType.END_EVENT, ProcessInstanceIntent.ELEMENT_COMPLETED),
             tuple(BpmnElementType.PROCESS, ProcessInstanceIntent.ELEMENT_COMPLETED));
