@@ -8,8 +8,6 @@
 package io.camunda.zeebe.engine.processing.bpmn.activity;
 
 import static io.camunda.zeebe.test.util.record.RecordingExporter.jobRecords;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.entry;
 
 import io.camunda.zeebe.engine.util.EngineRule;
 import io.camunda.zeebe.model.bpmn.Bpmn;
@@ -31,7 +29,6 @@ import io.camunda.zeebe.protocol.record.value.VariableRecordValue;
 import io.camunda.zeebe.test.util.record.RecordingExporter;
 import io.camunda.zeebe.test.util.record.RecordingExporterTestWatcher;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
@@ -181,43 +178,6 @@ public class ExecutionListenerTest {
     // then: the first EL[start] job is re-created
     assertJobState(
         processInstanceKey, 1, START_EL_TYPE, JobIntent.CREATED, JobKind.EXECUTION_LISTENER);
-  }
-
-  @Test
-  public void shouldAccessJobVariablesInEndListener() {
-    // given
-    ENGINE
-        .deployment()
-        .withXmlResource(
-            Bpmn.createExecutableProcess(PROCESS_ID)
-                .startEvent()
-                .serviceTask("task", t -> t.zeebeJobType(SERVICE_TASK_TYPE))
-                .zeebeStartExecutionListener(START_EL_TYPE)
-                .zeebeEndExecutionListener(END_EL_TYPE)
-                .endEvent()
-                .done())
-        .deploy();
-
-    final long processInstanceKey = ENGINE.processInstance().ofBpmnProcessId(PROCESS_ID).create();
-
-    // when
-    ENGINE
-        .job()
-        .ofInstance(processInstanceKey)
-        .withType(START_EL_TYPE)
-        .withVariable("x", 1)
-        .complete();
-
-    ENGINE.job().ofInstance(processInstanceKey).withType(SERVICE_TASK_TYPE).complete();
-
-    // then
-    final Optional<JobRecordValue> jobActivated =
-        ENGINE.jobs().withType(END_EL_TYPE).activate().getValue().getJobs().stream()
-            .filter(job -> job.getProcessInstanceKey() == processInstanceKey)
-            .findFirst();
-
-    assertThat(jobActivated).isPresent();
-    assertThat(jobActivated.get().getVariables()).contains(entry("x", 1));
   }
 
   @Test

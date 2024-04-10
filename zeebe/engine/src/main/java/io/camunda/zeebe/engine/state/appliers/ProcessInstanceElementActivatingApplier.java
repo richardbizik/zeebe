@@ -7,7 +7,7 @@
  */
 package io.camunda.zeebe.engine.state.appliers;
 
-import io.camunda.zeebe.engine.processing.deployment.model.element.ExecutableCallActivity;
+import io.camunda.zeebe.engine.processing.deployment.model.element.ExecutableActivity;
 import io.camunda.zeebe.engine.processing.deployment.model.element.ExecutableCatchEventElement;
 import io.camunda.zeebe.engine.processing.deployment.model.element.ExecutableCatchEventSupplier;
 import io.camunda.zeebe.engine.processing.deployment.model.element.ExecutableFlowElementContainer;
@@ -275,7 +275,7 @@ final class ProcessInstanceElementActivatingApplier
       final var hasEvents = !eventSupplier.getEvents().isEmpty();
       if (hasEvents
           || flowElement instanceof ExecutableJobWorkerElement
-          || flowElement instanceof ExecutableCallActivity) {
+          || flowElement instanceof ExecutableActivity) {
         eventScopeInstanceState.createInstance(
             elementInstanceKey,
             eventSupplier.getInterruptingElementIds(),

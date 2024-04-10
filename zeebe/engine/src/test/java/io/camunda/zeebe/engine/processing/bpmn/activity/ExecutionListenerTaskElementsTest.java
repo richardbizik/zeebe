@@ -10,6 +10,7 @@ package io.camunda.zeebe.engine.processing.bpmn.activity;
 import static io.camunda.zeebe.protocol.record.intent.JobIntent.FAILED;
 import static io.camunda.zeebe.test.util.record.RecordingExporter.jobRecords;
 import static io.camunda.zeebe.test.util.record.RecordingExporter.records;
+import static java.util.Map.entry;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.hamcrest.Matchers.is;
@@ -41,6 +42,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import org.junit.ClassRule;
@@ -707,6 +709,39 @@ public class ExecutionListenerTaskElementsTest {
             tuple(elementType, ProcessInstanceIntent.ELEMENT_COMPLETED),
             tuple(BpmnElementType.END_EVENT, ProcessInstanceIntent.ELEMENT_COMPLETED),
             tuple(BpmnElementType.PROCESS, ProcessInstanceIntent.ELEMENT_COMPLETED));
+  }
+
+  @Test
+  public void shouldAllowEndListenerToAccessStartListenerVariable() {
+    // given
+    deployProcess(
+        createProcessWithTask(
+            b ->
+                b.zeebeStartExecutionListener(START_EL_TYPE)
+                    .zeebeEndExecutionListener(END_EL_TYPE)));
+    final long processInstanceKey = ENGINE.processInstance().ofBpmnProcessId(PROCESS_ID).create();
+
+    // when: complete start EL with `foo` variable
+    ENGINE
+        .job()
+        .ofInstance(processInstanceKey)
+        .withType(START_EL_TYPE)
+        .withVariable("foo", 1)
+        .complete();
+
+    // process main task activity
+    processTask.accept(processInstanceKey);
+
+    // then: `foo` variable accessible in end EL
+    final Optional<JobRecordValue> jobActivated =
+        ENGINE.jobs().withType(END_EL_TYPE).activate().getValue().getJobs().stream()
+            .filter(job -> job.getProcessInstanceKey() == processInstanceKey)
+            .findFirst();
+
+    ENGINE.job().ofInstance(processInstanceKey).withType(END_EL_TYPE).complete();
+
+    assertThat(jobActivated)
+        .hasValueSatisfying(job -> assertThat(job.getVariables()).contains(entry("foo", 1)));
   }
 
   private void assertExecutionListenerJobsCompleted(
