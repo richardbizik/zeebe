@@ -14,50 +14,57 @@
  * SUBJECT AS SET OUT BELOW, THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * NOTHING IN THIS AGREEMENT EXCLUDES OR RESTRICTS A PARTY’S LIABILITY FOR (A) DEATH OR PERSONAL INJURY CAUSED BY THAT PARTY’S NEGLIGENCE, (B) FRAUD, OR (C) ANY OTHER LIABILITY TO THE EXTENT THAT IT CANNOT BE LAWFULLY EXCLUDED OR RESTRICTED.
  */
-package io.camunda.operate.util.apps.retry_after_failure;
+package io.camunda.operate.zeebeimport.processors;
 
+import static io.camunda.operate.zeebeimport.util.ImportUtil.tenantOrDefault;
+
+import io.camunda.operate.entities.SequenceFlowEntity;
 import io.camunda.operate.exceptions.PersistenceException;
-import io.camunda.operate.zeebe.ImportValueType;
-import io.camunda.operate.zeebeimport.ImportBatch;
-import io.camunda.operate.zeebeimport.processors.ImportBulkProcessor;
-import java.util.HashSet;
-import java.util.Set;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Primary;
+import io.camunda.operate.schema.templates.SequenceFlowTemplate;
+import io.camunda.operate.store.BatchRequest;
+import io.camunda.zeebe.protocol.record.Record;
+import io.camunda.zeebe.protocol.record.intent.ProcessInstanceIntent;
+import io.camunda.zeebe.protocol.record.value.ProcessInstanceRecordValue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
-/**
- * Let's mock ElasticsearchBulkProcessor, so that it throw an exception with the 2st run and persist
- * the data only with the second run.
- */
-@Configuration
-public class RetryAfterFailureTestConfig {
+@Component
+public class SequenceFlowZeebeRecordProcessor {
 
-  @Bean("io.camunda.operate.zeebeimport.processors.ElasticsearchBulkProcessor")
-  @Primary
-  public CustomElasticsearchBulkProcessor elasticsearchBulkProcessor() {
-    return new CustomElasticsearchBulkProcessor();
+  private static final Logger LOGGER =
+      LoggerFactory.getLogger(SequenceFlowZeebeRecordProcessor.class);
+  private static final String ID_PATTERN = "%s_%s";
+
+  @Autowired private SequenceFlowTemplate sequenceFlowTemplate;
+
+  public void processSequenceFlowRecord(final Record record, final BatchRequest batchRequest)
+      throws PersistenceException {
+    final String intentStr = record.getIntent().name();
+    if (intentStr.equals(ProcessInstanceIntent.SEQUENCE_FLOW_TAKEN.name())) {
+      final ProcessInstanceRecordValue recordValue = (ProcessInstanceRecordValue) record.getValue();
+      persistSequenceFlow(record, recordValue, batchRequest);
+    }
   }
 
-  public static class CustomElasticsearchBulkProcessor extends ImportBulkProcessor {
+  private void persistSequenceFlow(
+      final Record record,
+      final ProcessInstanceRecordValue recordValue,
+      final BatchRequest batchRequest)
+      throws PersistenceException {
+    final SequenceFlowEntity entity =
+        new SequenceFlowEntity()
+            .setId(
+                String.format(
+                    ID_PATTERN, recordValue.getProcessInstanceKey(), recordValue.getElementId()))
+            .setProcessInstanceKey(recordValue.getProcessInstanceKey())
+            .setProcessDefinitionKey(recordValue.getProcessDefinitionKey())
+            .setBpmnProcessId(recordValue.getBpmnProcessId())
+            .setActivityId(recordValue.getElementId())
+            .setTenantId(tenantOrDefault(recordValue.getTenantId()));
 
-    private final Set<ImportValueType> alreadyFailedTypes = new HashSet<>();
-
-    @Override
-    public void performImport(final ImportBatch importBatch) throws PersistenceException {
-      final ImportValueType importValueType = importBatch.getImportValueType();
-      if (!alreadyFailedTypes.contains(importValueType)) {
-        alreadyFailedTypes.add(importValueType);
-        throw new PersistenceException(
-            String.format(
-                "Fake exception when saving data of type %s to Elasticsearch", importValueType));
-      } else {
-        super.performImport(importBatch);
-      }
-    }
-
-    public void cancelAttempts() {
-      alreadyFailedTypes.clear();
-    }
+    LOGGER.debug("Index sequence flow: id {}", entity.getId());
+    batchRequest.add(sequenceFlowTemplate.getFullQualifiedName(), entity);
   }
 }

@@ -14,20 +14,19 @@
  * SUBJECT AS SET OUT BELOW, THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * NOTHING IN THIS AGREEMENT EXCLUDES OR RESTRICTS A PARTY’S LIABILITY FOR (A) DEATH OR PERSONAL INJURY CAUSED BY THAT PARTY’S NEGLIGENCE, (B) FRAUD, OR (C) ANY OTHER LIABILITY TO THE EXTENT THAT IT CANNOT BE LAWFULLY EXCLUDED OR RESTRICTED.
  */
-package io.camunda.operate.zeebeimport.v8_6.processors;
+package io.camunda.operate.zeebeimport.processors;
 
 import static io.camunda.operate.zeebeimport.util.ImportUtil.tenantOrDefault;
 
-import io.camunda.operate.entities.dmn.definition.DecisionRequirementsEntity;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.camunda.operate.entities.dmn.definition.DecisionDefinitionEntity;
 import io.camunda.operate.exceptions.PersistenceException;
-import io.camunda.operate.schema.indices.DecisionRequirementsIndex;
+import io.camunda.operate.schema.indices.DecisionIndex;
 import io.camunda.operate.store.BatchRequest;
 import io.camunda.operate.util.ConversionUtils;
 import io.camunda.zeebe.protocol.record.Record;
 import io.camunda.zeebe.protocol.record.intent.ProcessIntent;
-import io.camunda.zeebe.protocol.record.value.deployment.DecisionRequirementsRecordValue;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
+import io.camunda.zeebe.protocol.record.value.deployment.DecisionRecordValue;
 import java.util.HashSet;
 import java.util.Set;
 import org.slf4j.Logger;
@@ -36,12 +35,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
-public class DecisionRequirementsZeebeRecordProcessor {
+public class DecisionZeebeRecordProcessor {
 
-  private static final Logger LOGGER =
-      LoggerFactory.getLogger(DecisionRequirementsZeebeRecordProcessor.class);
-
-  private static final Charset CHARSET = StandardCharsets.UTF_8;
+  private static final Logger LOGGER = LoggerFactory.getLogger(DecisionZeebeRecordProcessor.class);
 
   private static final Set<String> STATES = new HashSet<>();
 
@@ -49,45 +45,39 @@ public class DecisionRequirementsZeebeRecordProcessor {
     STATES.add(ProcessIntent.CREATED.name());
   }
 
-  @Autowired private DecisionRequirementsIndex decisionRequirementsIndex;
+  @Autowired private ObjectMapper objectMapper;
 
-  public void processDecisionRequirementsRecord(
-      final Record record, final BatchRequest batchRequest) throws PersistenceException {
+  @Autowired private DecisionIndex decisionIndex;
+
+  public void processDecisionRecord(final Record record, final BatchRequest batchRequest)
+      throws PersistenceException {
     final String intentStr = record.getIntent().name();
     if (STATES.contains(intentStr)) {
-      final DecisionRequirementsRecordValue decisionRequirements =
-          (DecisionRequirementsRecordValue) record.getValue();
-      persistDecisionRequirements(decisionRequirements, batchRequest);
+      final DecisionRecordValue decision = (DecisionRecordValue) record.getValue();
+      persistDecision(decision, batchRequest);
     }
   }
 
-  private void persistDecisionRequirements(
-      final DecisionRequirementsRecordValue decision, final BatchRequest batchRequest)
+  private void persistDecision(final DecisionRecordValue decision, final BatchRequest batchRequest)
       throws PersistenceException {
-    final DecisionRequirementsEntity decisionReqEntity = createEntity(decision);
+    final DecisionDefinitionEntity decisionEntity = createEntity(decision);
     LOGGER.debug(
-        "Process: key {}, decisionRequirementsId {}",
-        decisionReqEntity.getKey(),
-        decisionReqEntity.getDecisionRequirementsId());
-
+        "Decision: key {}, decisionId {}", decisionEntity.getKey(), decisionEntity.getDecisionId());
     batchRequest.addWithId(
-        decisionRequirementsIndex.getFullQualifiedName(),
-        ConversionUtils.toStringOrNull(decisionReqEntity.getKey()),
-        decisionReqEntity);
+        decisionIndex.getFullQualifiedName(),
+        ConversionUtils.toStringOrNull(decisionEntity.getKey()),
+        decisionEntity);
   }
 
-  private DecisionRequirementsEntity createEntity(
-      final DecisionRequirementsRecordValue decisionRequirements) {
-    final byte[] byteArray = decisionRequirements.getResource();
-    final String dmn = new String(byteArray, CHARSET);
-    return new DecisionRequirementsEntity()
-        .setId(String.valueOf(decisionRequirements.getDecisionRequirementsKey()))
-        .setKey(decisionRequirements.getDecisionRequirementsKey())
-        .setName(decisionRequirements.getDecisionRequirementsName())
-        .setDecisionRequirementsId(decisionRequirements.getDecisionRequirementsId())
-        .setVersion(decisionRequirements.getDecisionRequirementsVersion())
-        .setResourceName(decisionRequirements.getResourceName())
-        .setXml(dmn)
-        .setTenantId(tenantOrDefault(decisionRequirements.getTenantId()));
+  private DecisionDefinitionEntity createEntity(final DecisionRecordValue decision) {
+    return new DecisionDefinitionEntity()
+        .setId(String.valueOf(decision.getDecisionKey()))
+        .setKey(decision.getDecisionKey())
+        .setName(decision.getDecisionName())
+        .setVersion(decision.getVersion())
+        .setDecisionId(decision.getDecisionId())
+        .setDecisionRequirementsId(decision.getDecisionRequirementsId())
+        .setDecisionRequirementsKey(decision.getDecisionRequirementsKey())
+        .setTenantId(tenantOrDefault(decision.getTenantId()));
   }
 }
