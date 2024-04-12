@@ -20,8 +20,8 @@
     <module>schema</module>
     <module>data-generator</module>
     <module>importer-common</module>
-    <module>importer-8_4</module>
     <module>importer-8_5</module>
+    <module>importer-8_6</module>
     <module>importer</module>
     <module>archiver</module>
     <module>webapp</module>
@@ -36,9 +36,8 @@
     <nexus.snapshot.repository>https://artifacts.camunda.com/artifactory/camunda-operate-snapshots/</nexus.snapshot.repository>
     <nexus.release.repository>https://artifacts.camunda.com/artifactory/camunda-operate/</nexus.release.repository>
 
-    <maven.compiler.target>17</maven.compiler.target>
-    <maven.compiler.source>17</maven.compiler.source>
-    <version.java>17</version.java>
+    <maven.compiler.target>21</maven.compiler.target>
+    <maven.compiler.source>21</maven.compiler.source>
 
     <license.header>${maven.multiModuleProjectDirectory}/license/license-header</license.header>
 
