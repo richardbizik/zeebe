@@ -209,7 +209,13 @@
     <!-- needed for the Spring actuators which enable health checks and liveness probes-->
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-webflux</artifactId>
+      <artifactId>spring-boot-starter-web</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-starter-logging</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <dependency>
@@ -239,12 +245,7 @@
 
     <dependency>
       <groupId>org.springframework</groupId>
-      <artifactId>spring-webflux</artifactId>
-    </dependency>
-
-    <dependency>
-      <groupId>io.projectreactor</groupId>
-      <artifactId>reactor-core</artifactId>
+      <artifactId>spring-webmvc</artifactId>
     </dependency>
 
     <dependency>
@@ -508,7 +509,7 @@
             <dependency>io.camunda:zeebe-opensearch-exporter</dependency>
 
             <!-- Needed for Spring Actuators, which provide health checks and liveness/readiness probed -->
-            <dependency>org.springframework.boot:spring-boot-starter-webflux</dependency>
+            <dependency>org.springframework.boot:spring-boot-starter-web</dependency>
             <dependency>org.openapitools:jackson-databind-nullable</dependency>
             <dependency>io.micrometer:micrometer-registry-prometheus</dependency>
 

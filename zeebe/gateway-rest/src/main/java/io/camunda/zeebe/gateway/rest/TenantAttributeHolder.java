@@ -9,21 +9,31 @@ package io.camunda.zeebe.gateway.rest;
 
 import io.camunda.zeebe.protocol.record.value.TenantOwned;
 import java.util.List;
-import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
 
 public final class TenantAttributeHolder {
   private static final String ATTRIBUTE_KEY = "io.camunda.zeebe.gateway.rest.tenantIds";
 
   private TenantAttributeHolder() {}
 
-  public static List<String> tenantIds(final ServerWebExchange exchange) {
-    return exchange.getAttributeOrDefault(
-        ATTRIBUTE_KEY, List.of(TenantOwned.DEFAULT_TENANT_IDENTIFIER));
+  public static List<String> tenantIds() {
+    final var requestAttributes = RequestContextHolder.currentRequestAttributes();
+    final var tenants =
+        requestAttributes.getAttribute(ATTRIBUTE_KEY, RequestAttributes.SCOPE_REQUEST);
+    final List<String> authorizedTenants;
+
+    if (tenants != null) {
+      authorizedTenants = (List<String>) tenants;
+    } else {
+      authorizedTenants = List.of(TenantOwned.DEFAULT_TENANT_IDENTIFIER);
+    }
+
+    return authorizedTenants;
   }
 
-  public static ServerWebExchange withTenantIds(
-      final ServerWebExchange exchange, final List<String> tenantIds) {
-    exchange.getAttributes().put(ATTRIBUTE_KEY, tenantIds);
-    return exchange;
+  public static void withTenantIds(final List<String> tenantIds) {
+    final var requestAttributes = RequestContextHolder.currentRequestAttributes();
+    requestAttributes.setAttribute(ATTRIBUTE_KEY, tenantIds, RequestAttributes.SCOPE_REQUEST);
   }
 }
